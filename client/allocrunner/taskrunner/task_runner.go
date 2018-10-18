@@ -78,12 +78,18 @@ type TaskRunner struct {
 	// stateDB is for persisting localState and taskState
 	stateDB cstate.StateDB
 
-	// ctx is the task runner's context representing the tasks's lifecycle.
-	// Canceling the context will cause the task to be destroyed.
+	// killCtx is the task runner's context representing the tasks's lifecycle.
+	// The context is canceled when the task is killed.
+	killCtx context.Context
+
+	// killCtxCancel is called when killing a task.
+	killCtxCancel context.CancelFunc
+
+	// ctx is used to exit the TaskRunner *without* affect task state.
 	ctx context.Context
 
-	// ctxCancel is used to exit the task runner's Run loop without
-	// stopping the task. Shutdown hooks are run.
+	// ctxCancel causes the TaskRunner to exit immediately without
+	// affecting task state. Useful for testing or graceful agent shutdown.
 	ctxCancel context.CancelFunc
 
 	// Logger is the logger for the task runner.
@@ -168,8 +174,8 @@ type Config struct {
 	TaskDir      *allocdir.TaskDir
 	Logger       log.Logger
 
-	// VaultClient is the client to use to derive and renew Vault tokens
-	VaultClient vaultclient.VaultClient
+	// Vault is the client to use to derive and renew Vault tokens
+	Vault vaultclient.VaultClient
 
 	// StateDB is used to store and restore state.
 	StateDB cstate.StateDB
@@ -183,8 +189,11 @@ type Config struct {
 }
 
 func NewTaskRunner(config *Config) (*TaskRunner, error) {
-	// Create a context for the runner
+	// Create a context for causing the runner to exit
 	trCtx, trCancel := context.WithCancel(context.Background())
+
+	// Create a context for killing the runner
+	killCtx, killCancel := context.WithCancel(context.Background())
 
 	// Initialize the environment builder
 	envBuilder := env.NewBuilder(
@@ -210,11 +219,13 @@ func NewTaskRunner(config *Config) (*TaskRunner, error) {
 		taskLeader:            config.Task.Leader,
 		envBuilder:            envBuilder,
 		consulClient:          config.Consul,
-		vaultClient:           config.VaultClient,
+		vaultClient:           config.Vault,
 		state:                 tstate,
 		localState:            state.NewLocalState(),
 		stateDB:               config.StateDB,
 		stateUpdater:          config.StateUpdater,
+		killCtx:               killCtx,
+		killCtxCancel:         killCancel,
 		ctx:                   trCtx,
 		ctxCancel:             trCancel,
 		triggerUpdateCh:       make(chan struct{}, triggerUpdateChCap),
@@ -299,7 +310,16 @@ func (tr *TaskRunner) Run() {
 	go tr.handleUpdates()
 
 MAIN:
-	for tr.ctx.Err() == nil {
+	for {
+		select {
+		case <-tr.killCtx.Done():
+			break MAIN
+		case <-tr.ctx.Done():
+			// TaskRunner was told to exit immediately
+			return
+		default:
+		}
+
 		// Run the prestart hooks
 		if err := tr.prestart(); err != nil {
 			tr.logger.Error("prestart failed", "error", err)
@@ -307,8 +327,13 @@ MAIN:
 			goto RESTART
 		}
 
-		if tr.ctx.Err() != nil {
+		select {
+		case <-tr.killCtx.Done():
 			break MAIN
+		case <-tr.ctx.Done():
+			// TaskRunner was told to exit immediately
+			return
+		default:
 		}
 
 		// Run the task
@@ -332,7 +357,13 @@ MAIN:
 			if resultCh, err := handle.WaitCh(context.Background()); err != nil {
 				tr.logger.Error("wait task failed", "error", err)
 			} else {
-				result = <-resultCh
+				select {
+				case result = <-resultCh:
+					// WaitCh returned a result
+				case <-tr.ctx.Done():
+					// TaskRunner was told to exit immediately
+					return
+				}
 			}
 		}
 
@@ -355,9 +386,12 @@ MAIN:
 		// Actually restart by sleeping and also watching for destroy events
 		select {
 		case <-time.After(restartDelay):
-		case <-tr.ctx.Done():
+		case <-tr.killCtx.Done():
 			tr.logger.Trace("task killed between restarts", "delay", restartDelay)
 			break MAIN
+		case <-tr.ctx.Done():
+			// TaskRunner was told to exit immediately
+			return
 		}
 	}
 
@@ -443,6 +477,13 @@ func (tr *TaskRunner) runDriver() error {
 
 	//TODO mounts and devices
 	//XXX Evaluate and encode driver config
+
+	var handle *drivers.TaskHandle
+
+	// Check to see if a task handle was restored
+	tr.localStateLock.RLock()
+	handle = tr.localState.TaskHandle
+	tr.localStateLock.RUnlock()
 
 	// Start the job
 	handle, net, err := tr.driver.StartTask(taskConfig)
