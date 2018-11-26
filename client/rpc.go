@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -72,10 +73,8 @@ TRY:
 	}
 
 	// If shutting down, exit without logging the error
-	select {
-	case <-c.shutdownCh:
-		return nil
-	default:
+	if err := c.ctx.Err(); err != nil {
+		return err
 	}
 
 	// Move off to another server, and see if we can retry.
@@ -91,7 +90,7 @@ TRY:
 		select {
 		case <-time.After(jitter):
 			goto TRY
-		case <-c.shutdownCh:
+		case <-c.ctx.Done():
 		}
 	}
 	return rpcErr
@@ -213,7 +212,7 @@ func (c *Client) streamingRpcConn(server *servers.Server, method string) (net.Co
 }
 
 // setupClientRpc is used to setup the Client's RPC endpoints
-func (c *Client) setupClientRpc() {
+func (c *Client) setupClientRpc(ctx context.Context) {
 	// Initialize the RPC handlers
 	c.endpoints.ClientStats = &ClientStats{c}
 	c.endpoints.FileSystem = NewFileSystemEndpoint(c)
@@ -225,7 +224,7 @@ func (c *Client) setupClientRpc() {
 	// Register the endpoints with the RPC server
 	c.setupClientRpcServer(c.rpcServer)
 
-	go c.rpcConnListener()
+	go c.rpcConnListener(ctx)
 }
 
 // setupClientRpcServer is used to populate a client RPC server with endpoints.
@@ -239,14 +238,14 @@ func (c *Client) setupClientRpcServer(server *rpc.Server) {
 // rpcConnListener is a long lived function that listens for new connections
 // being made on the connection pool and starts an RPC listener for each
 // connection.
-func (c *Client) rpcConnListener() {
+func (c *Client) rpcConnListener(ctx context.Context) {
 	// Make a channel for new connections.
 	conns := make(chan *yamux.Session, 4)
 	c.connPool.SetConnListener(conns)
 
 	for {
 		select {
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		case session, ok := <-conns:
 			if !ok {
@@ -309,13 +308,7 @@ func (c *Client) handleConn(conn net.Conn) {
 func (c *Client) handleNomadConn(conn net.Conn) {
 	defer conn.Close()
 	rpcCodec := pool.NewServerCodec(conn)
-	for {
-		select {
-		case <-c.shutdownCh:
-			return
-		default:
-		}
-
+	for c.ctx.Err() == nil {
 		if err := c.rpcServer.ServeRequest(rpcCodec); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") {
 				c.rpcLogger.Error("error performing RPC", "error", err, "addr", conn.RemoteAddr())

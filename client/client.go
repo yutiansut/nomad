@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -191,14 +192,21 @@ type Client struct {
 	// shutdownLock to access.
 	shutdown bool
 
-	// shutdownCh is closed to signal the Client is shutting down.
-	shutdownCh chan struct{}
+	// ctx is closed when Shutdown() is called.
+	ctx context.Context
 
+	// shutdownFunc cancels the context used to start cancellable
+	// goroutines.
+	shutdownFunc context.CancelFunc
+
+	// shutdownLock must be acquired while accessing the above shutdown
+	// fields.
 	shutdownLock sync.Mutex
 
-	// shutdownGroup are goroutines that exit when shutdownCh is closed.
-	// Shutdown() blocks on Wait() after closing shutdownCh.
-	shutdownGroup group
+	// stateGroup are goroutines that sync client state locally and to
+	// servers. They should be shutdown in a coordinated manner after
+	// AllocRunners have exited to ensure the latest state is propagated.
+	stateGroup group
 
 	// vaultClient is used to interact with Vault for token and secret renewals
 	vaultClient vaultclient.VaultClient
@@ -261,14 +269,15 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulServic
 		rpcLogger:            logger.Named("rpc"),
 		allocs:               make(map[string]AllocRunner),
 		allocUpdates:         make(chan *structs.Allocation, 64),
-		shutdownCh:           make(chan struct{}),
 		triggerDiscoveryCh:   make(chan struct{}),
 		triggerNodeUpdate:    make(chan struct{}, 8),
 		triggerEmitNodeEvent: make(chan *structs.NodeEvent, 8),
 	}
 
+	c.ctx, c.shutdownFunc = context.WithCancel(context.Background())
+
 	// Initialize the server manager
-	c.servers = servers.New(c.logger, c.shutdownCh, c)
+	c.servers = servers.New(c.logger, c.ctx.Done(), c)
 
 	// Initialize the client
 	if err := c.init(); err != nil {
@@ -276,7 +285,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulServic
 	}
 
 	// Setup the clients RPC server
-	c.setupClientRpc()
+	c.setupClientRpc(c.ctx)
 
 	// Initialize the ACL state
 	if err := c.clientACLResolver.init(); err != nil {
@@ -295,7 +304,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulServic
 	c.configLock.Unlock()
 
 	fingerprintManager := NewFingerprintManager(c.configCopy.PluginSingletonLoader, c.GetConfig, c.configCopy.Node,
-		c.shutdownCh, c.updateNodeFromFingerprint, c.updateNodeFromDriver,
+		c.ctx.Done(), c.updateNodeFromFingerprint, c.updateNodeFromDriver,
 		c.logger)
 
 	// Fingerprint the node and scan for drivers
@@ -342,7 +351,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulServic
 
 	// Setup Consul discovery if enabled
 	if c.configCopy.ConsulConfig.ClientAutoJoin != nil && *c.configCopy.ConsulConfig.ClientAutoJoin {
-		c.shutdownGroup.Go(c.consulDiscovery)
+		go c.consulDiscovery(c.ctx)
 		if c.servers.NumServers() == 0 {
 			// No configured servers; trigger discovery manually
 			c.triggerDiscoveryCh <- struct{}{}
@@ -369,21 +378,21 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulServic
 	}
 
 	// Register and then start heartbeating to the servers.
-	c.shutdownGroup.Go(c.registerAndHeartbeat)
+	go c.registerAndHeartbeat(c.ctx)
 
 	// Begin periodic snapshotting of state.
-	c.shutdownGroup.Go(c.periodicSnapshot)
+	c.stateGroup.Go(c.periodicSnapshot)
 
 	// Begin syncing allocations to the server
-	c.shutdownGroup.Go(c.allocSync)
+	c.stateGroup.Go(c.allocSync)
 
 	// Start the client! Don't use the shutdownGroup as run handles
 	// shutdowns manually to prevent updates from being applied during
 	// shutdown.
-	go c.run()
+	go c.run(c.ctx)
 
 	// Start collecting stats
-	c.shutdownGroup.Go(c.emitStats)
+	go c.emitStats(c.ctx)
 
 	c.logger.Info("started client", "node_id", c.NodeID())
 	return c, nil
@@ -553,6 +562,7 @@ func (c *Client) Shutdown() error {
 		return nil
 	}
 	c.logger.Info("shutting down")
+	c.shutdown = true
 
 	// Shutdown the device manager
 	c.devicemanager.Shutdown()
@@ -586,14 +596,14 @@ func (c *Client) Shutdown() error {
 		wg.Wait()
 	}
 
-	c.shutdown = true
-	close(c.shutdownCh)
+	// Shutdown cancelable goroutines after AllocRunners shutdown
+	c.shutdownFunc()
 
 	// Must close connection pool to unblock alloc watcher
 	c.connPool.Shutdown()
 
-	// Wait for goroutines to stop
-	c.shutdownGroup.Wait()
+	// Wait for state-syncing goroutines to stop
+	c.stateGroup.Wait()
 
 	// One final save state
 	c.saveState()
@@ -1214,15 +1224,15 @@ func (c *Client) retryIntv(base time.Duration) time.Duration {
 
 // registerAndHeartbeat is a long lived goroutine used to register the client
 // and then start heartbeating to the server.
-func (c *Client) registerAndHeartbeat() {
+func (c *Client) registerAndHeartbeat(ctx context.Context) {
 	// Register the node
-	c.retryRegisterNode()
+	c.retryRegisterNode(ctx)
 
 	// Start watching changes for node changes
-	c.shutdownGroup.Go(c.watchNodeUpdates)
+	go c.watchNodeUpdates(ctx)
 
 	// Start watching for emitting node events
-	c.shutdownGroup.Go(c.watchNodeEvents)
+	go c.watchNodeEvents(ctx)
 
 	// Setup the heartbeat timer, for the initial registration
 	// we want to do this quickly. We want to do it extra quickly
@@ -1238,7 +1248,7 @@ func (c *Client) registerAndHeartbeat() {
 		select {
 		case <-c.rpcRetryWatcher():
 		case <-heartbeat:
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 
@@ -1248,7 +1258,7 @@ func (c *Client) registerAndHeartbeat() {
 			if strings.Contains(err.Error(), "node not found") {
 				// Re-register the node
 				c.logger.Info("re-registering node")
-				c.retryRegisterNode()
+				c.retryRegisterNode(ctx)
 				heartbeat = time.After(lib.RandomStagger(initialHeartbeatStagger))
 			} else {
 				intv := c.getHeartbeatRetryIntv(err)
@@ -1322,7 +1332,7 @@ func (c *Client) periodicSnapshot() {
 	// Create a snapshot timer
 	snapshot := time.After(stateSnapshotIntv)
 
-	for {
+	for c.ctx.Err() == nil {
 		select {
 		case <-snapshot:
 			snapshot = time.After(stateSnapshotIntv)
@@ -1330,17 +1340,17 @@ func (c *Client) periodicSnapshot() {
 				c.logger.Error("error saving state", "error", err)
 			}
 
-		case <-c.shutdownCh:
+		case <-c.ctx.Done():
 			return
 		}
 	}
 }
 
 // run is a long lived goroutine used to run the client. Shutdown() stops it first
-func (c *Client) run() {
+func (c *Client) run(ctx context.Context) {
 	// Watch for changes in allocations
 	allocUpdates := make(chan *allocUpdates, 8)
-	go c.watchAllocations(allocUpdates)
+	go c.watchAllocations(ctx, allocUpdates)
 
 	for {
 		select {
@@ -1357,7 +1367,7 @@ func (c *Client) run() {
 			c.runAllocs(update)
 			c.shutdownLock.Unlock()
 
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -1384,7 +1394,7 @@ func (c *Client) submitNodeEvents(events []*structs.NodeEvent) error {
 
 // watchNodeEvents is a handler which receives node events and on a interval
 // and submits them in batch format to the server
-func (c *Client) watchNodeEvents() {
+func (c *Client) watchNodeEvents(ctx context.Context) {
 	// batchEvents stores events that have yet to be published
 	var batchEvents []*structs.NodeEvent
 
@@ -1416,7 +1426,7 @@ func (c *Client) watchNodeEvents() {
 				// Reset the events since we successfully sent them.
 				batchEvents = []*structs.NodeEvent{}
 			}
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -1434,7 +1444,7 @@ func (c *Client) triggerNodeEvent(nodeEvent *structs.NodeEvent) {
 
 // retryRegisterNode is used to register the node or update the registration and
 // retry in case of failure.
-func (c *Client) retryRegisterNode() {
+func (c *Client) retryRegisterNode(ctx context.Context) {
 	for {
 		err := c.registerNode()
 		if err == nil {
@@ -1451,7 +1461,7 @@ func (c *Client) retryRegisterNode() {
 		select {
 		case <-c.rpcRetryWatcher():
 		case <-time.After(c.retryIntv(registerRetryIntv)):
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -1591,7 +1601,7 @@ func (c *Client) AllocStateUpdated(alloc *structs.Allocation) {
 
 	select {
 	case c.allocUpdates <- stripped:
-	case <-c.shutdownCh:
+	case <-c.ctx.Done():
 	}
 }
 
@@ -1603,42 +1613,43 @@ func (c *Client) allocSync() {
 	updates := make(map[string]*structs.Allocation)
 	for {
 		select {
-		case <-c.shutdownCh:
+		case <-c.ctx.Done():
 			syncTicker.Stop()
-			return
 		case alloc := <-c.allocUpdates:
 			// Batch the allocation updates until the timer triggers.
 			updates[alloc.ID] = alloc
+			continue
 		case <-syncTicker.C:
-			// Fast path if there are no updates
-			if len(updates) == 0 {
-				continue
-			}
+		}
 
-			sync := make([]*structs.Allocation, 0, len(updates))
-			for _, alloc := range updates {
-				sync = append(sync, alloc)
-			}
+		// Fast path if there are no updates
+		if len(updates) == 0 {
+			continue
+		}
 
-			// Send to server.
-			args := structs.AllocUpdateRequest{
-				Alloc:        sync,
-				WriteRequest: structs.WriteRequest{Region: c.Region()},
-			}
+		sync := make([]*structs.Allocation, 0, len(updates))
+		for _, alloc := range updates {
+			sync = append(sync, alloc)
+		}
 
-			var resp structs.GenericResponse
-			if err := c.RPC("Node.UpdateAlloc", &args, &resp); err != nil {
-				c.logger.Error("error updating allocations", "error", err)
+		// Send to server.
+		args := structs.AllocUpdateRequest{
+			Alloc:        sync,
+			WriteRequest: structs.WriteRequest{Region: c.Region()},
+		}
+
+		var resp structs.GenericResponse
+		if err := c.RPC("Node.UpdateAlloc", &args, &resp); err != nil {
+			c.logger.Error("error updating allocations", "error", err)
+			syncTicker.Stop()
+			syncTicker = time.NewTicker(c.retryIntv(allocSyncRetryIntv))
+			staggered = true
+		} else {
+			updates = make(map[string]*structs.Allocation)
+			if staggered {
 				syncTicker.Stop()
-				syncTicker = time.NewTicker(c.retryIntv(allocSyncRetryIntv))
-				staggered = true
-			} else {
-				updates = make(map[string]*structs.Allocation)
-				if staggered {
-					syncTicker.Stop()
-					syncTicker = time.NewTicker(allocSyncIntv)
-					staggered = false
-				}
+				syncTicker = time.NewTicker(allocSyncIntv)
+				staggered = false
 			}
 		}
 	}
@@ -1660,7 +1671,7 @@ type allocUpdates struct {
 }
 
 // watchAllocations is used to scan for updates to allocations
-func (c *Client) watchAllocations(updates chan *allocUpdates) {
+func (c *Client) watchAllocations(ctx context.Context, updates chan *allocUpdates) {
 	// The request and response for getting the map of allocations that should
 	// be running on the Node to their AllocModifyIndex which is incremented
 	// when the allocation is updated by the servers.
@@ -1693,10 +1704,8 @@ OUTER:
 		err := c.RPC("Node.GetClientAllocs", &req, &resp)
 		if err != nil {
 			// Shutdown often causes EOF errors, so check for shutdown first
-			select {
-			case <-c.shutdownCh:
+			if ctx.Err() != nil {
 				return
-			default:
 			}
 
 			// COMPAT: Remove in 0.6. This is to allow the case in which the
@@ -1704,7 +1713,7 @@ OUTER:
 			// can cause the SecretID to be lost
 			if strings.Contains(err.Error(), "node secret ID does not match") {
 				c.logger.Debug("secret mismatch; re-registering node", "error", err)
-				c.retryRegisterNode()
+				c.retryRegisterNode(ctx)
 			} else if err != noServersErr {
 				c.logger.Error("error querying node allocations", "error", err)
 			}
@@ -1714,16 +1723,14 @@ OUTER:
 				continue
 			case <-time.After(retry):
 				continue
-			case <-c.shutdownCh:
+			case <-ctx.Done():
 				return
 			}
 		}
 
 		// Check for shutdown
-		select {
-		case <-c.shutdownCh:
+		if ctx.Err() != nil {
 			return
-		default:
 		}
 
 		// Filter all allocations whose AllocModifyIndex was not incremented.
@@ -1771,7 +1778,7 @@ OUTER:
 					continue
 				case <-time.After(retry):
 					continue
-				case <-c.shutdownCh:
+				case <-ctx.Done():
 					return
 				}
 			}
@@ -1792,17 +1799,15 @@ OUTER:
 						// Wait for the server we contact to receive the
 						// allocations
 						continue OUTER
-					case <-c.shutdownCh:
+					case <-ctx.Done():
 						return
 					}
 				}
 			}
 
 			// Check for shutdown
-			select {
-			case <-c.shutdownCh:
+			if ctx.Err() != nil {
 				return
-			default:
 			}
 		}
 
@@ -1823,7 +1828,7 @@ OUTER:
 
 		select {
 		case updates <- update:
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -1847,7 +1852,7 @@ func (c *Client) updateNodeLocked() {
 
 // watchNodeUpdates blocks until it is edge triggered. Once triggered,
 // it will update the client node copy and re-register the node.
-func (c *Client) watchNodeUpdates() {
+func (c *Client) watchNodeUpdates(ctx context.Context) {
 	var hasChanged bool
 	timer := time.NewTimer(c.retryIntv(nodeUpdateRetryIntv))
 	defer timer.Stop()
@@ -1856,7 +1861,7 @@ func (c *Client) watchNodeUpdates() {
 		select {
 		case <-timer.C:
 			c.logger.Debug("state changed, updating node and re-registering")
-			c.retryRegisterNode()
+			c.retryRegisterNode(ctx)
 			hasChanged = false
 		case <-c.triggerNodeUpdate:
 			if hasChanged {
@@ -1864,7 +1869,7 @@ func (c *Client) watchNodeUpdates() {
 			}
 			hasChanged = true
 			timer.Reset(c.retryIntv(nodeUpdateRetryIntv))
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -2153,20 +2158,23 @@ func (c *Client) triggerDiscovery() {
 // consulDiscovery waits for the signal to attempt server discovery via Consul.
 // It's intended to be started in a goroutine. See triggerDiscovery() for
 // causing consul discovery from other code locations.
-func (c *Client) consulDiscovery() {
+func (c *Client) consulDiscovery(ctx context.Context) {
 	for {
 		select {
 		case <-c.triggerDiscoveryCh:
-			if err := c.consulDiscoveryImpl(); err != nil {
+			if err := c.consulDiscoveryImpl(ctx); err != nil {
+				if err == context.Canceled {
+					return
+				}
 				c.logger.Error("error discovering nomad servers", "error", err)
 			}
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (c *Client) consulDiscoveryImpl() error {
+func (c *Client) consulDiscoveryImpl(ctx context.Context) error {
 	consulLogger := c.logger.Named("consul")
 
 	// Acquire heartbeat lock to prevent heartbeat from running
@@ -2212,8 +2220,13 @@ DISCOLOOP:
 			Near:       "_agent",
 			WaitTime:   consul.DefaultQueryWaitDuration,
 		}
+		consulOpts.WithContext(ctx)
 		consulServices, _, err := c.consulCatalog.Service(serviceName, consul.ServiceTagRPC, consulOpts)
 		if err != nil {
+			if err == context.Canceled {
+				return err
+			}
+
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("unable to query service %+q from Consul datacenter %+q: %v", serviceName, dc, err))
 			continue
 		}
@@ -2274,7 +2287,7 @@ DISCOLOOP:
 }
 
 // emitStats collects host resource usage stats periodically
-func (c *Client) emitStats() {
+func (c *Client) emitStats(ctx context.Context) {
 	// Determining NodeClass to be emitted
 	var emittedNodeClass string
 	if emittedNodeClass = c.Node().NodeClass; emittedNodeClass == "" {
@@ -2309,7 +2322,7 @@ func (c *Client) emitStats() {
 			}
 
 			c.emitClientMetrics()
-		case <-c.shutdownCh:
+		case <-ctx.Done():
 			return
 		}
 	}
