@@ -120,8 +120,8 @@ type Config struct {
 	// Namespace to use. If not provided the default namespace is used.
 	Namespace string
 
-	// httpClient is the client to use. Default will be used if not provided.
-	httpClient *http.Client
+	// HttpClient is the client to use. Default will be used if not provided.
+	HttpClient *http.Client
 
 	// HttpAuth is the auth info to use for http access.
 	HttpAuth *HttpBasicAuth
@@ -147,7 +147,7 @@ func (c *Config) ClientConfig(region, address string, tlsEnabled bool) *Config {
 		Address:    fmt.Sprintf("%s://%s", scheme, address),
 		Region:     region,
 		Namespace:  c.Namespace,
-		httpClient: defaultConfig.httpClient,
+		HttpClient: defaultConfig.HttpClient,
 		SecretID:   c.SecretID,
 		HttpAuth:   c.HttpAuth,
 		WaitTime:   c.WaitTime,
@@ -201,10 +201,10 @@ func (t *TLSConfig) Copy() *TLSConfig {
 func DefaultConfig() *Config {
 	config := &Config{
 		Address:    "http://127.0.0.1:4646",
-		httpClient: cleanhttp.DefaultClient(),
+		HttpClient: cleanhttp.DefaultClient(),
 		TLSConfig:  &TLSConfig{},
 	}
-	transport := config.httpClient.Transport.(*http.Transport)
+	transport := config.HttpClient.Transport.(*http.Transport)
 	transport.TLSHandshakeTimeout = 10 * time.Second
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -265,17 +265,17 @@ func DefaultConfig() *Config {
 func (c *Config) SetTimeout(t time.Duration) error {
 	if c == nil {
 		return fmt.Errorf("nil config")
-	} else if c.httpClient == nil {
+	} else if c.HttpClient == nil {
 		return fmt.Errorf("nil HTTP client")
-	} else if c.httpClient.Transport == nil {
+	} else if c.HttpClient.Transport == nil {
 		return fmt.Errorf("nil HTTP client transport")
 	}
 
 	// Apply a timeout.
 	if t.Nanoseconds() >= 0 {
-		transport, ok := c.httpClient.Transport.(*http.Transport)
+		transport, ok := c.HttpClient.Transport.(*http.Transport)
 		if !ok {
-			return fmt.Errorf("unexpected HTTP transport: %T", c.httpClient.Transport)
+			return fmt.Errorf("unexpected HTTP transport: %T", c.HttpClient.Transport)
 		}
 
 		transport.DialContext = (&net.Dialer{
@@ -292,7 +292,7 @@ func (c *Config) ConfigureTLS() error {
 	if c.TLSConfig == nil {
 		return nil
 	}
-	if c.httpClient == nil {
+	if c.HttpClient == nil {
 		return fmt.Errorf("config HTTP Client must be set")
 	}
 
@@ -311,7 +311,7 @@ func (c *Config) ConfigureTLS() error {
 		}
 	}
 
-	clientTLSConfig := c.httpClient.Transport.(*http.Transport).TLSClientConfig
+	clientTLSConfig := c.HttpClient.Transport.(*http.Transport).TLSClientConfig
 	rootConfig := &rootcerts.Config{
 		CAFile: c.TLSConfig.CACert,
 		CAPath: c.TLSConfig.CAPath,
@@ -348,8 +348,8 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("invalid address '%s': %v", config.Address, err)
 	}
 
-	if config.httpClient == nil {
-		config.httpClient = defConfig.httpClient
+	if config.HttpClient == nil {
+		config.HttpClient = defConfig.HttpClient
 	}
 
 	// Configure the TLS configurations
@@ -611,7 +611,7 @@ func (c *Client) doRequest(r *request) (time.Duration, *http.Response, error) {
 		return 0, nil, err
 	}
 	start := time.Now()
-	resp, err := c.config.httpClient.Do(req)
+	resp, err := c.config.HttpClient.Do(req)
 	diff := time.Now().Sub(start)
 
 	// If the response is compressed, we swap the body's reader.
