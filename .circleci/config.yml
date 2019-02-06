@@ -1,3 +1,5 @@
+version: 2.1
+
 executors:
   go:
     working_directory: ~/go/src/github.com/hashicorp/nomad
@@ -124,11 +126,11 @@ workflows:
       - test-pkg-nomad
       - test-pkg-api
       - test-priv
-      - build-deps-image:
-          context: dani-test
-          filters:
-            branches:
-              only: dani/circleci
+      # - build-deps-image:
+      #     context: dani-test
+      #     filters:
+      #       branches:
+      #         only: dani/circleci
       - build-website:
           context: static-sites
           filters:
