@@ -20,15 +20,17 @@ jobs:
 
   lint:
     executor: go
+    environment:
+      GOPATH: /home/circleci/go
     steps:
       - checkout
       - run: make check
-      - run: make checkscripts
 
   test-fast:
     executor: go
     environment:
       GOTEST_PKGS_EXCLUDE: "./api|./client|./drivers/docker|./drivers/rkt|./drivers/exec|./nomad"
+      GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
@@ -40,6 +42,7 @@ jobs:
     executor: go
     environment:
       GOTEST_PKGS: "./client"
+      GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
@@ -51,6 +54,7 @@ jobs:
     executor: go
     environment:
       GOTEST_PKGS: "./nomad"
+      GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
@@ -62,6 +66,7 @@ jobs:
     executor: go
     environment:
       GOTEST_PKGS: "./api"
+      GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
@@ -71,16 +76,33 @@ jobs:
 
   test-priv:
     machine: true
+    working_directory: ~/go/src/github.com/hashicorp/nomad
     environment:
       GOTEST_PKGS_: "./drivers/docker|./drivers/rkt|./drivers/exec"
       GOTESTSUM_JUNITFILE: /tmp/results.xml
-      GOPATH: ~/go
+      GOPATH: /home/circleci/go
       GOVERSION: 1.11.5
     steps:
       - checkout
-      - run: mkdir -p ~/go
-      - run: wget https://dl.google.com/go/go$GOVERSION.$(lsb_release -a).tar.gz
-      - run: sudo tar -C /usr/local -xzf go$GOVERSION.$(lsb_release -a).tar.gz
+      - run:
+          name: install go
+          command: |
+            wget https://dl.google.com/go/go$GOVERSION.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go$GOVERSION.linux-amd64.tar.gz
+      - run:
+          name: install protoc
+          command: |
+            sudo apt-get update \
+                && sudo apt-get -y upgrade \
+                && sudo apt-get install -y unzip \
+                && sudo rm -rf /var/lib/apt/lists/*
+            wget -q -O /tmp/protoc.zip https://github.com/google/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip \
+                && unzip /tmp/protoc.zip -d /tmp/protoc3 \
+                && sudo mv /tmp/protoc3/bin/* /usr/local/bin/ \
+                && sudo mv /tmp/protoc3/include/* /usr/local/include/ \
+                && sudo ln -s /usr/local/bin/protoc /usr/bin/protoc \
+                && rm -rf /tmp/protoc*
+      - run: make bootstrap
       - run: PATH="$GOPATH/bin:/usr/local/go/bin:$PATH" make travis
       - store_test_results:
           path: /tmp/results.xml
@@ -118,7 +140,7 @@ jobs:
           command: ./scripts/deploy.sh
 
 workflows:
-  website:
+  build-test:
     jobs:
       - lint
       - test-fast
@@ -131,6 +153,9 @@ workflows:
       #     filters:
       #       branches:
       #         only: dani/circleci
+
+  website:
+    jobs:
       - build-website:
           context: static-sites
           filters:
