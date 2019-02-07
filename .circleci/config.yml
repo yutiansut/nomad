@@ -28,46 +28,14 @@ jobs:
       - checkout
       - run: make check
 
-  test-fast:
+  test-container:
     executor: go
+    parameters:
+      test_packages:
+        type: string
+        default: "./..."
     environment:
-      GOTEST_PKGS_EXCLUDE: "./api|./client*|./drivers/docker|./drivers/rkt|./drivers/exec|./nomad*"
-      GOPATH: /home/circleci/go
-      GOTESTSUM_JUNITFILE: /tmp/results.xml
-    steps:
-      - checkout
-      - run: make test
-      - store_test_results:
-          path: /tmp/results.xml
-
-  test-pkg-client:
-    executor: go
-    environment:
-      GOTEST_PKGS: "./client/..."
-      GOPATH: /home/circleci/go
-      GOTESTSUM_JUNITFILE: /tmp/results.xml
-    steps:
-      - checkout
-      - run: make test
-      - store_test_results:
-          path: /tmp/results.xml
-
-  test-pkg-nomad:
-    executor: go
-    environment:
-      GOTEST_PKGS: "./nomad/..."
-      GOPATH: /home/circleci/go
-      GOTESTSUM_JUNITFILE: /tmp/results.xml
-    steps:
-      - checkout
-      - run: make test
-      - store_test_results:
-          path: /tmp/results.xml
-
-  test-pkg-api:
-    executor: go
-    environment:
-      GOTEST_PKGS: "./api"
+      GOTEST_PKGS: "<< parameters.test_packages >>"
       GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
@@ -80,7 +48,7 @@ jobs:
     machine: true
     working_directory: ~/go/src/github.com/hashicorp/nomad
     environment:
-      GOTEST_PKGS_: "./drivers/docker|./drivers/rkt|./drivers/exec"
+      GOTEST_PKGS: "./drivers/..."
       GOTESTSUM_JUNITFILE: /tmp/results.xml
       GOPATH: /home/circleci/go
       GOVERSION: 1.11.5
@@ -145,10 +113,18 @@ workflows:
   build-test:
     jobs:
       - lint
-      - test-fast
-      - test-pkg-client
-      - test-pkg-nomad
-      - test-pkg-api
+      - test-container:
+          test_packages: "./client/..."
+      - test-container:
+          test_packages: "./nomad/..."
+      - test-container:
+          test_packages: "./api/..."
+      - test-container:
+          test_packages: "./command/..."
+      - test-container:
+          test_packages: "./devices/..."
+      - test-container:
+          test_packages: "./acl/...|./scheduler/...|./testutil/...|./version/...|./helper/..."
       - test-priv
       # - build-deps-image:
       #     context: dani-test
