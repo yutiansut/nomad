@@ -31,7 +31,7 @@ jobs:
   test-fast:
     executor: go
     environment:
-      GOTEST_PKGS_EXCLUDE: "./api|./client|./drivers/docker|./drivers/rkt|./drivers/exec|./nomad"
+      GOTEST_PKGS_EXCLUDE: "./api|./client*|./drivers/docker|./drivers/rkt|./drivers/exec|./nomad*"
       GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
@@ -43,7 +43,7 @@ jobs:
   test-pkg-client:
     executor: go
     environment:
-      GOTEST_PKGS: "./client"
+      GOTEST_PKGS: "./client/..."
       GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
@@ -55,7 +55,7 @@ jobs:
   test-pkg-nomad:
     executor: go
     environment:
-      GOTEST_PKGS: "./nomad"
+      GOTEST_PKGS: "./nomad/..."
       GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
