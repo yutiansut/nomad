@@ -5,8 +5,6 @@ executors:
     working_directory: ~/go/src/github.com/hashicorp/nomad
     docker:
       - image: dantoml/nomad-build-image:latest
-    environment:
-      GOMAXPROCS: 1
   docker-builder:
     working_directory: ~/go/src/github.com/hashicorp/nomad
     machine: true # TODO: Find latest docker image id
@@ -38,6 +36,7 @@ jobs:
       GOTEST_PKGS: "<< parameters.test_packages >>"
       GOPATH: /home/circleci/go
       GOTESTSUM_JUNITFILE: /tmp/results.xml
+      GOMAXPROCS: 1
     steps:
       - checkout
       - run: make test
