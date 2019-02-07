@@ -36,7 +36,7 @@ jobs:
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
-      - run: make travis
+      - run: make test
       - store_test_results:
           path: /tmp/results.xml
 
@@ -48,7 +48,7 @@ jobs:
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
-      - run: make travis
+      - run: make test
       - store_test_results:
           path: /tmp/results.xml
 
@@ -60,7 +60,7 @@ jobs:
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
-      - run: make travis
+      - run: make test
       - store_test_results:
           path: /tmp/results.xml
 
@@ -72,7 +72,7 @@ jobs:
       GOTESTSUM_JUNITFILE: /tmp/results.xml
     steps:
       - checkout
-      - run: make travis
+      - run: make test
       - store_test_results:
           path: /tmp/results.xml
 
@@ -105,7 +105,7 @@ jobs:
                 && sudo ln -s /usr/local/bin/protoc /usr/bin/protoc \
                 && rm -rf /tmp/protoc*
       - run: make bootstrap
-      - run: PATH="$GOPATH/bin:/usr/local/go/bin:$PATH" make travis
+      - run: PATH="$GOPATH/bin:/usr/local/go/bin:$PATH" make test
       - store_test_results:
           path: /tmp/results.xml
 
