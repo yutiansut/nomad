@@ -956,3 +956,12 @@ func (ar *allocRunner) GetTaskEventHandler(taskName string) drivermanager.EventH
 	}
 	return nil
 }
+
+func (ar *allocRunner) GetTaskExecHandler(taskName string) drivermanager.TaskExecHandler {
+	tr, ok := ar.tasks[taskName]
+	if !ok {
+		return nil
+	}
+
+	return tr.TaskExecHandler()
+}

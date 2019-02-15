@@ -2,7 +2,9 @@ package java
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -550,6 +552,11 @@ func (d *Driver) ExecTask(taskID string, cmd []string, timeout time.Duration) (*
 			ExitCode: exitCode,
 		},
 	}, nil
+}
+
+func (d *Driver) ExecTaskStreaming(ctx context.Context, taskID string, execOpts drivers.ExecOptions,
+	stdin io.Reader, stdout, stderr io.Writer, resizeCh <-chan drivers.TerminalSize) (*drivers.ExitResult, error) {
+	return nil, errors.New("not supported")
 }
 
 // GetAbsolutePath returns the absolute path of the passed binary by resolving
