@@ -100,19 +100,26 @@ func NewRandomIterator(ctx Context, nodes []*structs.Node) *StaticIterator {
 // the host volumes necessary to schedule a task group.
 type HostVolumeChecker struct {
 	ctx     Context
-	volumes map[string]struct{}
+	volumes map[string]*structs.Volume
 }
 
 // NewHostVolumeChecker creates a HostVolumeChecker from a set of volumes
-func NewHostVolumeChecker(ctx Context, volumes map[string]struct{}) *HostVolumeChecker {
+func NewHostVolumeChecker(ctx Context) *HostVolumeChecker {
 	return &HostVolumeChecker{
-		ctx:     ctx,
-		volumes: volumes,
+		ctx: ctx,
 	}
 }
 
-func (h *HostVolumeChecker) SetVolumes(v map[string]struct{}) {
-	h.volumes = v
+// SetVolumes takes the volumes required by a task group, filters them down to
+// only the host volumes, and updates the checker.
+func (h *HostVolumeChecker) SetVolumes(volumes map[string]*structs.Volume) {
+	filtered := make(map[string]*structs.Volume)
+	for k, v := range volumes {
+		if v.Type == "host" {
+			filtered[k] = v
+		}
+	}
+	h.volumes = filtered
 }
 
 func (h *HostVolumeChecker) Feasible(candidate *structs.Node) bool {

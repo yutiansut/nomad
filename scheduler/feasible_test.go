@@ -89,9 +89,14 @@ func TestHostVolumeChecker(t *testing.T) {
 		mock.Node(),
 		mock.Node(),
 		mock.Node(),
+		mock.Node(),
 	}
-	nodes[1].HostVolumes = map[string]*structs.Volume{"foo": &structs.Volume{}}
+	nodes[1].HostVolumes = map[string]*structs.Volume{"foo": &structs.Volume{Type: "host"}}
 	nodes[2].HostVolumes = map[string]*structs.Volume{
+		"foo": &structs.Volume{},
+		"bar": &structs.Volume{},
+	}
+	nodes[3].HostVolumes = map[string]*structs.Volume{
 		"foo": &structs.Volume{},
 		"bar": &structs.Volume{},
 	}
@@ -100,32 +105,34 @@ func TestHostVolumeChecker(t *testing.T) {
 		"baz": &structs.Volume{},
 	}
 
-	noVolumes := map[string]struct{}{}
+	noVolumes := map[string]*structs.Volume{}
 
-	twoVolumes := map[string]struct{}{
-		"foo": {},
-		"bar": {},
+	// three requested volumes, with one that should be filtered, leaving two
+	volumes := map[string]*structs.Volume{
+		"foo": {Type: "host"},
+		"bar": {Type: "host"},
+		"baz": {Type: "cluster_volume"},
 	}
 
-	checker := NewHostVolumeChecker(ctx, nil)
+	checker := NewHostVolumeChecker(ctx)
 	cases := []struct {
 		Node             *structs.Node
-		RequestedVolumes map[string]struct{}
+		RequestedVolumes map[string]*structs.Volume
 		Result           bool
 	}{
 		{ // Nil Volumes, some requested
 			Node:             nodes[0],
-			RequestedVolumes: twoVolumes,
+			RequestedVolumes: volumes,
 			Result:           false,
 		},
 		{ // Mismatched set of volumes
 			Node:             nodes[1],
-			RequestedVolumes: twoVolumes,
+			RequestedVolumes: volumes,
 			Result:           false,
 		},
 		{ // Happy Path
 			Node:             nodes[2],
-			RequestedVolumes: twoVolumes,
+			RequestedVolumes: volumes,
 			Result:           true,
 		},
 		{ // No Volumes requested or available
