@@ -96,6 +96,52 @@ func NewRandomIterator(ctx Context, nodes []*structs.Node) *StaticIterator {
 	return NewStaticIterator(ctx, nodes)
 }
 
+// HostVolumeChecker is a FeasibilityChecker which returns whether a node has
+// the host volumes necessary to schedule a task group.
+type HostVolumeChecker struct {
+	ctx     Context
+	volumes map[string]struct{}
+}
+
+// NewHostVolumeChecker creates a HostVolumeChecker from a set of volumes
+func NewHostVolumeChecker(ctx Context, volumes map[string]struct{}) *HostVolumeChecker {
+	return &HostVolumeChecker{
+		ctx:     ctx,
+		volumes: volumes,
+	}
+}
+
+func (h *HostVolumeChecker) SetVolumes(v map[string]struct{}) {
+	h.volumes = v
+}
+
+func (h *HostVolumeChecker) Feasible(candidate *structs.Node) bool {
+	if h.hasVolumes(candidate) {
+		return true
+	}
+
+	h.ctx.Metrics().FilterNode(candidate, "missing host volumes")
+	return false
+}
+
+func (h *HostVolumeChecker) hasVolumes(n *structs.Node) bool {
+	hLen := len(h.volumes)
+	nLen := len(n.HostVolumes)
+
+	// Requesting more volumes than the node has, can't meet the criteria.
+	if hLen > nLen {
+		return false
+	}
+
+	for k := range h.volumes {
+		if _, ok := n.HostVolumes[k]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
 // DriverChecker is a FeasibilityChecker which returns whether a node has the
 // drivers necessary to scheduler a task group.
 type DriverChecker struct {

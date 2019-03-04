@@ -81,6 +81,73 @@ func TestRandomIterator(t *testing.T) {
 	}
 }
 
+func TestHostVolumeChecker(t *testing.T) {
+	_, ctx := testContext(t)
+	nodes := []*structs.Node{
+		mock.Node(),
+		mock.Node(),
+		mock.Node(),
+		mock.Node(),
+		mock.Node(),
+	}
+	nodes[1].HostVolumes = map[string]*structs.Volume{"foo": &structs.Volume{}}
+	nodes[2].HostVolumes = map[string]*structs.Volume{
+		"foo": &structs.Volume{},
+		"bar": &structs.Volume{},
+	}
+	nodes[4].HostVolumes = map[string]*structs.Volume{
+		"foo": &structs.Volume{},
+		"baz": &structs.Volume{},
+	}
+
+	noVolumes := map[string]struct{}{}
+
+	twoVolumes := map[string]struct{}{
+		"foo": {},
+		"bar": {},
+	}
+
+	checker := NewHostVolumeChecker(ctx, nil)
+	cases := []struct {
+		Node             *structs.Node
+		RequestedVolumes map[string]struct{}
+		Result           bool
+	}{
+		{ // Nil Volumes, some requested
+			Node:             nodes[0],
+			RequestedVolumes: twoVolumes,
+			Result:           false,
+		},
+		{ // Mismatched set of volumes
+			Node:             nodes[1],
+			RequestedVolumes: twoVolumes,
+			Result:           false,
+		},
+		{ // Happy Path
+			Node:             nodes[2],
+			RequestedVolumes: twoVolumes,
+			Result:           true,
+		},
+		{ // No Volumes requested or available
+			Node:             nodes[3],
+			RequestedVolumes: noVolumes,
+			Result:           true,
+		},
+		{ // No Volumes requested, some available
+			Node:             nodes[4],
+			RequestedVolumes: noVolumes,
+			Result:           true,
+		},
+	}
+
+	for i, c := range cases {
+		checker.SetVolumes(c.RequestedVolumes)
+		if act := checker.Feasible(c.Node); act != c.Result {
+			t.Fatalf("case(%d) failed: got %v; want %v", i, act, c.Result)
+		}
+	}
+}
+
 func TestDriverChecker(t *testing.T) {
 	_, ctx := testContext(t)
 	nodes := []*structs.Node{
