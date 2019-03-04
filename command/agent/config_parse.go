@@ -382,6 +382,7 @@ func parseClient(result **ClientConfig, list *ast.ObjectList) error {
 		"gc_max_allocs",
 		"no_host_uuid",
 		"server_join",
+		"host_volume",
 	}
 	if err := helper.CheckHCLKeys(listVal, valid); err != nil {
 		return err
@@ -398,6 +399,7 @@ func parseClient(result **ClientConfig, list *ast.ObjectList) error {
 	delete(m, "reserved")
 	delete(m, "stats")
 	delete(m, "server_join")
+	delete(m, "host_volume")
 
 	var config ClientConfig
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
@@ -465,6 +467,13 @@ func parseClient(result **ClientConfig, list *ast.ObjectList) error {
 	if o := listVal.Filter("server_join"); len(o.Items) > 0 {
 		if err := parseServerJoin(&config.ServerJoin, o); err != nil {
 			return multierror.Prefix(err, "server_join->")
+		}
+	}
+
+	// Parse HostVolume configs
+	if o := listVal.Filter("host_volume"); len(o.Items) > 0 {
+		if err := parseHostVolumes(&config.HostVolumes, o); err != nil {
+			return multierror.Prefix(err, "host_volume->")
 		}
 	}
 
@@ -1032,5 +1041,43 @@ func parsePlugins(result *[]*config.PluginConfig, list *ast.ObjectList) error {
 	}
 
 	*result = plugins
+	return nil
+}
+
+func parseHostVolumes(out *map[string]*config.HostVolumeConfig, list *ast.ObjectList) error {
+	volumes := make(map[string]*config.HostVolumeConfig, len(list.Items))
+	for _, item := range list.Items {
+		n := item.Keys[0].Token.Value().(string)
+		valid := []string{
+			"type",
+			"read_only",
+			"hidden",
+			"source",
+		}
+		if err := helper.CheckHCLKeys(item.Val, valid); err != nil {
+			return err
+		}
+
+		var m map[string]interface{}
+		if err := hcl.DecodeObject(&m, item.Val); err != nil {
+			return err
+		}
+
+		var result config.HostVolumeConfig
+		dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			WeaklyTypedInput: true,
+			Result:           &result,
+		})
+		if err != nil {
+			return err
+		}
+		if err := dec.Decode(m); err != nil {
+			return err
+		}
+
+		volumes[n] = &result
+	}
+
+	*out = volumes
 	return nil
 }
