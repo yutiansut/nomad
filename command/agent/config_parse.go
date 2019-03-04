@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/hcl/hcl/ast"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/tlsutil"
+	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
 	"github.com/mitchellh/mapstructure"
 )
@@ -1044,8 +1045,8 @@ func parsePlugins(result *[]*config.PluginConfig, list *ast.ObjectList) error {
 	return nil
 }
 
-func parseHostVolumes(out *map[string]*config.HostVolumeConfig, list *ast.ObjectList) error {
-	volumes := make(map[string]*config.HostVolumeConfig, len(list.Items))
+func parseHostVolumes(out *map[string]*structs.HostVolumeConfig, list *ast.ObjectList) error {
+	volumes := make(map[string]*structs.HostVolumeConfig, len(list.Items))
 	for _, item := range list.Items {
 		n := item.Keys[0].Token.Value().(string)
 		valid := []string{
@@ -1063,7 +1064,7 @@ func parseHostVolumes(out *map[string]*config.HostVolumeConfig, list *ast.Object
 			return err
 		}
 
-		var result config.HostVolumeConfig
+		var result structs.HostVolumeConfig
 		dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 			WeaklyTypedInput: true,
 			Result:           &result,
