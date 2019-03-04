@@ -85,6 +85,7 @@ func TestParse(t *testing.T) {
 				TaskGroups: []*api.TaskGroup{
 					{
 						Name: helper.StringToPtr("outside"),
+
 						Tasks: []*api.Task{
 							{
 								Name:   "outside",
@@ -107,6 +108,13 @@ func TestParse(t *testing.T) {
 								LTarget: "kernel.os",
 								RTarget: "linux",
 								Operand: "=",
+							},
+						},
+
+						Volumes: map[string]*api.Volume{
+							"foo": {
+								Name: "foo",
+								Type: "host",
 							},
 						},
 						Affinities: []*api.Affinity{
@@ -182,6 +190,12 @@ func TestParse(t *testing.T) {
 										{
 											"FOO": "bar",
 										},
+									},
+								},
+								VolumeMounts: []*api.VolumeMount{
+									{
+										Volume:      "foo",
+										Destination: "/mnt/foo",
 									},
 								},
 								Affinities: []*api.Affinity{
