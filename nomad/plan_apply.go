@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"time"
@@ -99,7 +100,9 @@ func (p *planner) planApply() {
 		// Snapshot the state so that we have a consistent view of the world
 		// if no snapshot is available
 		if waitCh == nil || snap == nil {
-			snap, err = p.fsm.State().Snapshot()
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			snap, err = p.fsm.State().SnapshotAfter(ctx, p.raft.LastIndex())
+			cancel()
 			if err != nil {
 				p.logger.Error("failed to snapshot state", "error", err)
 				pending.respond(nil, err)
